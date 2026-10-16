@@ -106,7 +106,7 @@ class BranchSpec(NamedTuple):
                     func = path.func or path.afunc
                 if func is not None:
                     # find callable method
-                    if (cal := getattr(path, "__call__", None)) and ismethod(cal):
+                    if (cal := getattr(func, "__call__", None)) and ismethod(cal):
                         func = cal
                     # get the return type
                     if rtn_type := get_type_hints(func).get("return"):

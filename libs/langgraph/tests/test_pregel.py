@@ -2947,6 +2947,43 @@ def test_callable_in_conditional_edges_with_no_path_map() -> None:
     }
 
 
+@pytest.mark.parametrize("is_async", [False, True])
+async def test_callable_in_conditional_edges_with_literal_return_type(
+    is_async: bool,
+) -> None:
+    class State(TypedDict):
+        target: Literal["a", "b"]
+        value: int
+
+    class Router:
+        def __call__(self, state: State) -> Literal["a", "b"]:
+            return state["target"]
+
+    class AsyncRouter:
+        async def __call__(self, state: State) -> Literal["a", "b"]:
+            return state["target"]
+
+    router = AsyncRouter() if is_async else Router()
+    workflow = StateGraph(State)
+    workflow.add_node("src", lambda state: {})
+    workflow.add_node("a", lambda state: {"value": 1})
+    workflow.add_node("b", lambda state: {"value": 2})
+    workflow.add_edge(START, "src")
+    workflow.add_conditional_edges("src", router)
+    app = workflow.compile()
+
+    assert {
+        (edge.target, edge.conditional)
+        for edge in app.get_graph().edges
+        if edge.source == "src"
+    } == {("a", True), ("b", True)}
+    for target, value in [("a", 1), ("b", 2)]:
+        assert await app.ainvoke({"target": target, "value": 0}) == {
+            "target": target,
+            "value": value,
+        }
+
+
 def test_function_in_conditional_edges_with_no_path_map() -> None:
     class State(TypedDict, total=False):
         query: str
