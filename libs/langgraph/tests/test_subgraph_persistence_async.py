@@ -16,9 +16,9 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from typing_extensions import TypedDict
 
-from langgraph.graph import START, StateGraph
+from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import MessagesState
-from langgraph.types import Command, Interrupt, interrupt
+from langgraph.types import Command, Durability, Interrupt, interrupt
 from tests.any_str import AnyStr
 
 pytestmark = pytest.mark.anyio
@@ -302,6 +302,59 @@ async def test_checkpointer_false_no_persistence_async(
 
 
 # -- checkpointer=True (stateful) --
+
+
+@pytest.mark.parametrize("breakpoint", [None, "before", "after"])
+async def test_stateful_static_breakpoint_repeated_calls_async(
+    async_checkpointer: BaseCheckpointSaver,
+    durability: Durability,
+    breakpoint: str | None,
+) -> None:
+    class ChildState(TypedDict):
+        x: int
+
+    class State(ChildState):
+        rounds: int
+
+    calls: list[int] = []
+
+    async def increment(state: ChildState) -> ChildState:
+        calls.append(state["x"])
+        return {"x": state["x"] + 1}
+
+    child = (
+        StateGraph(ChildState)
+        .add_node("increment", increment)
+        .add_edge(START, "increment")
+        .compile(checkpointer=True)
+    )
+    graph = (
+        StateGraph(State)
+        .add_node("child", child)
+        .add_node("tick", lambda state: {"rounds": state["rounds"] + 1})
+        .add_edge(START, "child")
+        .add_edge("child", "tick")
+        .add_conditional_edges(
+            "tick",
+            lambda state: "child" if state["rounds"] < 2 else END,
+            ["child", END],
+        )
+        .compile(
+            checkpointer=async_checkpointer,
+            interrupt_before=["child"] if breakpoint == "before" else None,
+            interrupt_after=["tick"] if breakpoint == "after" else None,
+        )
+    )
+    config = {"configurable": {"thread_id": str(uuid4())}}
+    result = await graph.ainvoke({"x": 0, "rounds": 0}, config, durability=durability)
+    for _ in range(3):
+        if not (await graph.aget_state(config)).next:
+            break
+        result = await graph.ainvoke(None, config, durability=durability)
+
+    assert result == {"x": 2, "rounds": 2}
+    assert calls == [0, 1]
+    assert (await graph.aget_state(config)).next == ()
 
 
 @NEEDS_CONTEXTVARS

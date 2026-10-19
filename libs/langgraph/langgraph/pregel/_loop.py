@@ -944,6 +944,16 @@ class PregelLoop:
                 ),
             )
         )
+        # A stateful subgraph's latest checkpoint may belong to a previous call.
+        if is_resuming and self.is_nested and not self._addressed:
+            parents = self.checkpoint_metadata.get("parents", {})
+            if parents and any(
+                parents.get(ns) != checkpoint_id
+                for ns, checkpoint_id in configurable.get(
+                    CONFIG_KEY_CHECKPOINT_MAP, {}
+                ).items()
+            ):
+                is_resuming = False
 
         # When replaying from a specific checkpoint, drop cached RESUME
         # writes so that interrupt() calls re-fire instead of returning
