@@ -346,7 +346,9 @@ class GraphRunStream:
                                     if ch._error is not None:
                                         raise ch._error
                                     done.add(name)
-                        if len(done) == before:
+                        if len(done) == before and not any(
+                            ch._items for ch in channels.values()
+                        ):
                             break
         finally:
             for ch in channels.values():

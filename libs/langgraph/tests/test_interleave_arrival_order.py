@@ -296,6 +296,32 @@ class TestInterleaveArrivalOrder:
 
 
 class TestInterleaveIntegration:
+    @pytest.mark.parametrize(
+        ("names", "expected"),
+        [
+            (("alpha",), [("alpha", "a1")]),
+            (
+                ("alpha", "beta"),
+                [("beta", "b1"), ("alpha", "a1"), ("beta", "b2")],
+            ),
+        ],
+    )
+    def test_interleave_drains_items_emitted_during_finalize(
+        self, names: tuple[str, ...], expected: list[tuple[str, str]]
+    ) -> None:
+        class FinalizeTransformer(_TwoChannelTransformer):
+            def finalize(self) -> None:
+                self._beta.push("b1")
+                self._alpha.push("a1")
+                self._beta.push("b2")
+
+        run = _build_simple_graph().stream_events(
+            {"value": "x", "items": []},
+            version="v3",
+            transformers=[FinalizeTransformer],
+        )
+        assert list(run.interleave(*names)) == expected
+
     def test_interleave_values_and_messages(self) -> None:
         run = _build_simple_graph().stream_events(
             {"value": "x", "items": []}, version="v3"
