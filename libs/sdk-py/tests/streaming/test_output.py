@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import httpx
 import pytest
@@ -136,6 +137,58 @@ async def test_output_multiple_awaiters_share_one_state_request():
     assert result1 == {"shared": True}
     assert result2 == {"shared": True}
     assert fake.state_request_count == 1
+
+
+@pytest.mark.parametrize("error", [None, "run failed"], ids=["completed", "failed"])
+@pytest.mark.parametrize("already_waiting", [False, True], ids=["later", "waiting"])
+async def test_output_timeout_preserves_original_wait(
+    error: str | None, already_waiting: bool
+):
+    """A bounded output timeout must not cancel another output's lifecycle wait."""
+    release = asyncio.Event()
+    terminal = (
+        lifecycle_completed_event(seq=1)
+        if error is None
+        else lifecycle_errored_event(seq=1, error=error)
+    )
+
+    class GatedLifecycle(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            await release.wait()
+            yield f"data: {json.dumps(terminal)}\n\n".encode()
+
+    fake = FakeServer()
+    fake.set_state({"answer": 42})
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/stream/events"):
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                stream=GatedLifecycle(),
+            )
+        return await fake.transport.handle_async_request(request)
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="http://test"
+    ) as raw:
+        threads = ThreadsClient(HttpClient(raw))
+        async with threads.stream(assistant_id="agent") as thread:
+            await thread.run.start(input={})
+            original = asyncio.ensure_future(thread.output) if already_waiting else None
+            with pytest.raises(asyncio.TimeoutError):
+                await thread.output.with_timeout(0.01)
+            assert fake.state_request_count == 0
+
+            release.set()
+            output = original if original is not None else thread.output
+            if error is None:
+                assert await asyncio.wait_for(output, timeout=2.0) == {"answer": 42}
+            else:
+                with pytest.raises(RuntimeError, match=error):
+                    await asyncio.wait_for(output, timeout=2.0)
+
+    assert fake.state_request_count == (1 if error is None else 0)
 
 
 async def test_output_terminal_error_raises():

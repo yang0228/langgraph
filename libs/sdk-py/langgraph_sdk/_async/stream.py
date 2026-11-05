@@ -1974,7 +1974,8 @@ class AsyncThreadStream:
                 "thread.output: no run has been started and no explicit thread_id "
                 "was provided. Call thread.run.start() first."
             )
-        return await self._run_done
+        # A timed-out waiter must not cancel the shared lifecycle signal.
+        return await asyncio.shield(self._run_done)
 
     async def _apply_lifecycle_event(self, event: Event) -> None:
         """Update `interrupted` / `interrupts` / `_run_done` from a lifecycle or input event."""
