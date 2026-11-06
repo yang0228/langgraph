@@ -12,6 +12,7 @@ from uuid import uuid4
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from typing_extensions import TypedDict
 
@@ -343,6 +344,50 @@ def test_stateful_static_breakpoint_repeated_calls(
     assert result == {"x": 2, "rounds": 2}
     assert calls == [0, 1]
     assert graph.get_state(config).next == ()
+
+
+def test_stateful_completed_child_is_not_repeated_on_parent_recovery(
+    sync_checkpointer: BaseCheckpointSaver,
+    durability: Durability,
+) -> None:
+    class State(TypedDict):
+        x: int
+
+    calls: list[int] = []
+
+    def increment(state: State):
+        calls.append(state["x"])
+        return {"x": state["x"] + 1}
+
+    child = (
+        StateGraph(State)
+        .add_node("increment", increment)
+        .add_edge(START, "increment")
+        .compile(checkpointer=True)
+    )
+    failed = False
+
+    def caller(state: State, config: RunnableConfig):
+        nonlocal failed
+        result = child.invoke(state, config)
+        if not failed:
+            failed = True
+            raise ConnectionError("after child completed")
+        return result
+
+    graph = (
+        StateGraph(State)
+        .add_node("caller", caller)
+        .add_edge(START, "caller")
+        .compile(checkpointer=sync_checkpointer)
+    )
+    config = {"configurable": {"thread_id": str(uuid4())}}
+    with pytest.raises(ConnectionError, match="after child completed"):
+        graph.invoke({"x": 0}, config, durability=durability)
+
+    assert calls == [0]
+    assert graph.invoke(None, config, durability=durability) == {"x": 1}
+    assert calls == [0]
 
 
 def test_stateful_state_accumulates(
